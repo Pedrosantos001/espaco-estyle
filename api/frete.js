@@ -1,7 +1,7 @@
 // api/frete.js
-const QUOTE_URL = process.env.SUPERFRETE_QUOTE_URL || "https://api.superfrete.com.br/v0/quote";
+const DEFAULT_QUOTE_URL = process.env.SUPERFRETE_QUOTE_URL || "https://api.superfrete.com.br/v0/quote";
+const FETCH_TIMEOUT_MS = 12000; // 12s
 
-// Lê o JSON mesmo quando a Vercel não parseia req.body
 async function readJsonBody(req) {
   if (req.body && Object.keys(req.body).length) return req.body;
   const buf = await new Promise((resolve, reject) => {
@@ -38,19 +38,42 @@ export default async function handler(req, res) {
       })),
     };
 
-    const resp = await fetch(QUOTE_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-    });
+    const quoteUrl = DEFAULT_QUOTE_URL;
 
-    const data = await resp.json().catch(() => ({}));
+    // Timeout
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+
+    let resp, data;
+    try {
+      resp = await fetch(quoteUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+        signal: ac.signal,
+      });
+      data = await resp.json().catch(() => ({}));
+    } catch (err) {
+      clearTimeout(t);
+      console.error("[/api/frete] fetch failed", {
+        message: err?.message,
+        code: err?.code || err?.cause?.code,
+        name: err?.name,
+        urlTried: quoteUrl,
+      });
+      return res.status(502).json({
+        error: "Falha de rede ao contatar SuperFrete",
+        detail: { message: String(err?.message || err), code: err?.code || err?.cause?.code, url: quoteUrl }
+      });
+    }
+    clearTimeout(t);
+
     if (!resp.ok) {
-      console.error("[/api/frete] SuperFrete erro:", data);
+      console.error("[/api/frete] SuperFrete respondeu erro", { status: resp.status, data });
       return res.status(resp.status).json({ error: "Falha na cotação", detail: data || null });
     }
 
